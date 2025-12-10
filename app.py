@@ -1,165 +1,151 @@
-"""
-==========================================
- LOTTERY OPTIMIZER – EXACTLY ONE 4-MATCH
-==========================================
 
-This script:
-- Loads an Excel file containing lottery tickets (Column A: "1,2,3,4,5,6,7")
-- Finds a 7-number combination (1–37) that:
-    • Matches EXACTLY ONE ticket with 4 numbers
-    • Matches ZERO tickets with 5, 6, or 7 numbers
-    • Minimizes total payout
-- Performs:
-    • Random deep search
-    • Targeted fallback search
-    • Local improvement search
-- Saves top 10 combinations to CSV
+The tool will search for a **7-number combination (1–37)** that:
 
-Author: Your Name
-GitHub: your_link_here
-"""
+- Produces the **lowest total payout**
+- Has **exactly ONE 4-match**
+- Has **ZERO 5/6/7 matches**
+""")
 
-import pandas as pd
-import numpy as np
-import random
-import time
-from itertools import combinations
+uploaded_file = st.file_uploader("📂 Upload Excel File", type=["xlsx"])
 
+if uploaded_file:
 
-def load_tickets(filename):
-    df = pd.read_excel(filename)
+    df = pd.read_excel(uploaded_file)
+
+    # Parse tickets into list-of-lists
     tickets = [list(map(int, str(row).split(','))) for row in df.iloc[:, 0]]
-    return tickets
+    n_tickets = len(tickets)
 
-
-def build_presence_matrix(tickets):
-    n = len(tickets)
-    presence = np.zeros((n, 37), dtype=np.uint8)
+    # Build presence matrix for fast match calculation
+    presence = np.zeros((n_tickets, 37), dtype=np.uint8)
     for i, t in enumerate(tickets):
         for num in t:
             presence[i, num - 1] = 1
-    return presence
-
-
-def score_and_check(combo, presence, payout_map):
-    cols = [c - 1 for c in combo]
-    matches = presence[:, cols].sum(axis=1)
-
-    if np.any(matches >= 5):      # reject 5+, 6, 7 matches
-        return None
-    if np.sum(matches == 4) != 1: # require EXACTLY one 4-match
-        return None
-
-    return int(payout_map[matches].sum())
-
-
-def random_search(nums, presence, payout_map, time_limit, max_random):
-    best_combo = None
-    best_score = 10**18
-    found = 0
-
-    start = time.time()
-    iters = 0
-
-    while time.time() - start < time_limit and iters < max_random:
-        iters += 1
-        combo = random.sample(nums, 7)
-        score = score_and_check(combo, presence, payout_map)
-
-        if score is None:
-            continue
-
-        found += 1
-        if score < best_score:
-            best_combo = sorted(combo)
-            best_score = score
-
-    return best_combo, best_score, found
-
-
-def targeted_search(tickets, nums, presence, payout_map, best_combo, best_score):
-    if best_combo is not None:
-        return best_combo, best_score
-
-    for t in tickets:
-        for four in combinations(t, 4):
-            pool = [x for x in nums if x not in four and x not in t]
-            for _ in range(300):
-                add = random.sample(pool, 3)
-                combo = sorted(list(four) + add)
-                score = score_and_check(combo, presence, payout_map)
-
-                if score is not None and score < best_score:
-                    best_combo = combo
-                    best_score = score
-
-    return best_combo, best_score
-
-
-def local_improvement(best_combo, best_score, nums, presence, payout_map, iterations=20000):
-    current = best_combo.copy()
-    current_score = best_score
-    saved = {tuple(current): current_score}
-
-    for _ in range(iterations):
-        num_out = random.choice(current)
-        pool = [x for x in nums if x not in current]
-        num_in = random.choice(pool)
-
-        cand = current.copy()
-        cand[cand.index(num_out)] = num_in
-        cand = sorted(cand)
-
-        score = score_and_check(cand, presence, payout_map)
-        if score is None:
-            continue
-
-        if score < current_score:
-            current = cand
-            current_score = score
-            saved[tuple(cand)] = score
-        else:
-            saved.setdefault(tuple(cand), score)
-
-    top_sorted = sorted([(s, list(c)) for c, s in saved.items()])
-    return top_sorted
-
-
-def main(filename):
-    tickets = load_tickets(filename)
-    nums = list(range(1, 38))
-
-    presence = build_presence_matrix(tickets)
 
     payout_map = np.zeros(8, dtype=np.int64)
-    payout_map[3], payout_map[4], payout_map[5] = 15, 1000, 4000
-    payout_map[6], payout_map[7] = 10000, 100000
+    payout_map[3] = 15
+    payout_map[4] = 1000
+    payout_map[5] = 4000
+    payout_map[6] = 10000
+    payout_map[7] = 100000
 
-    best_combo, best_score, found = random_search(
-        nums, presence, payout_map,
-        time_limit=120,
-        max_random=300000
-    )
+    def score_and_check(combo):
+        """Returns payout if valid, else None."""
+        cols = [c - 1 for c in combo]
+        matches = presence[:, cols].sum(axis=1)
 
-    best_combo, best_score = targeted_search(
-        tickets, nums, presence, payout_map,
-        best_combo, best_score
-    )
+        # reject 5+ matches
+        if np.any(matches >= 5):
+            return None
 
-    if best_combo is None:
-        print("❌ No valid combinations found.")
-        return
+        # must have exactly ONE 4-match
+        if np.sum(matches == 4) != 1:
+            return None
 
-    top_results = local_improvement(best_combo, best_score, nums, presence, payout_map)
+        total = int(payout_map[matches].sum())
+        return total
 
-    out_df = pd.DataFrame([{"score": s, "combo": ",".join(map(str, c))} for s, c in top_results[:10]])
-    out_df.to_csv("top_exact_one_4match.csv", index=False)
+    st.subheader("⚙ Settings")
+    TIME_LIMIT = st.slider("Random Search Time (seconds)", 10, 300, 120)
+    MAX_RANDOM = st.number_input("Max Random Tries", 50000, 1000000, 300000)
+    LOCAL_IMPROVE = st.number_input("Local Improvement Steps", 5000, 100000, 20000)
 
-    print("\n🏆 Best combinations:")
-    for s, c in top_results[:10]:
-        print(s, c)
+    if st.button("🚀 Start Deep Search"):
+        nums = list(range(1, 38))
+        best_combo = None
+        best_score = 10**18
+        valid_found = 0
 
+        st.write("⏳ Running deep search…")
+        progress = st.progress(0)
+        status = st.empty()
 
-if __name__ == "__main__":
-    # Change filename manually or pass via command line
-    main("tickets.xlsx")
+        start = time.time()
+        iters = 0
+
+        # -------------------------
+        # RANDOM SEARCH
+        # -------------------------
+        while time.time() - start < TIME_LIMIT and iters < MAX_RANDOM:
+            iters += 1
+            combo = random.sample(nums, 7)
+            s = score_and_check(combo)
+            if s is None:
+                continue
+
+            valid_found += 1
+            if s < best_score:
+                best_score = s
+                best_combo = sorted(combo)
+
+            if iters % 1000 == 0:
+                progress.progress(min(1.0, iters / MAX_RANDOM))
+                status.write(f"Checked {iters:,} combos…")
+
+        st.success("Random search finished.")
+
+        # -------------------------
+        # TARGETED SEARCH
+        # -------------------------
+        if best_combo is None:
+            st.warning("No valid combo in random search. Starting targeted search…")
+            for t in tickets:
+                for four in combinations(t, 4):
+                    pool = [x for x in range(1, 38) if x not in four and x not in t]
+                    for _ in range(200):
+                        add = random.sample(pool, 3)
+                        combo = sorted(list(four) + add)
+                        s = score_and_check(combo)
+                        if s is not None and s < best_score:
+                            best_score = s
+                            best_combo = combo
+
+        st.write("Best after targeted search:", best_combo, best_score)
+
+        # -------------------------
+        # LOCAL IMPROVEMENT
+        # -------------------------
+        if best_combo:
+            st.write("🔧 Running local improvement…")
+            current = best_combo.copy()
+            current_score = best_score
+            top_candidates = {tuple(current): current_score}
+
+            for _ in range(LOCAL_IMPROVE):
+                num_out = random.choice(current)
+                pool = [x for x in range(1, 38) if x not in current]
+                num_in = random.choice(pool)
+
+                cand = current.copy()
+                cand[cand.index(num_out)] = num_in
+                cand = sorted(cand)
+
+                s = score_and_check(cand)
+                if s is None:
+                    continue
+
+                if s < current_score:
+                    current = cand
+                    current_score = s
+                    top_candidates[tuple(cand)] = s
+
+            # Sort top results
+            top_sorted = sorted([(s, list(c)) for c, s in top_candidates.items()])
+            top10 = top_sorted[:10]
+
+            st.subheader("🏆 Top 10 Results")
+            for s, c in top10:
+                st.write(f"**₹{s}** — {c}")
+
+            # Export CSV
+            out_df = pd.DataFrame([{"score": s, "combo": ",".join(map(str, c))} for s, c in top10])
+            csv_data = out_df.to_csv(index=False).encode()
+            st.download_button(
+                "📥 Download Result CSV",
+                csv_data,
+                "top_exact_one_4match.csv",
+                "text/csv"
+            )
+
+        else:
+            st.error("❌ No valid combinations found!")
